@@ -21,10 +21,10 @@ model User {
 }
 
 model Game {
-  id     Int   @id @default(autoincrement())
-  score  Int   @default(0)
-  level  Int   @default(1)
-  user   User  @relation(fields: [userId], references: [id])
-  userId Int
+  id        Int   @id @default(autoincrement())
+  score     Int   @default(0)
+  level     Int   @default(0)   // <-- changed default to 0
+  user      User  @relation(fields: [userId], references: [id])
+  userId    Int
   createdAt DateTime @default(now())
 }

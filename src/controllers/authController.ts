@@ -6,13 +6,33 @@ import jwt from "jsonwebtoken";
 interface JwtPayload {
   userId: number;
 }
+interface AuthRequest extends Request {
+  user?: JwtPayload;
+}
 
-const generateToken = (user: { id: number }): string => {
-  if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET is not defined");
-  return jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+/* ---------- helpers ---------- */
+const generateToken = (userId: number): string => {
+  if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET missing");
+  return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: "7d" });
 };
 
-// ✅ Register
+const selectUser = {
+  id: true,
+  username: true,
+  name: true,
+  family: true,
+  email: true,
+  phone: true,
+};
+
+const selectGame = {
+  id: true,
+  score: true,
+  level: true,
+  createdAt: true,
+};
+
+/* ---------- register ---------- */
 export const register = async (req: Request, res: Response) => {
   try {
     const { name, family, username, password, confirmPassword, phone, email } = req.body;
@@ -30,19 +50,30 @@ export const register = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Username or email already in use" });
 
     const hashed = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({
-      data: { name, family, username, password: hashed, phone, email },
+
+    // ---- create user + first game in ONE transaction ----
+    const [user, _] = await prisma.$transaction([
+      prisma.user.create({
+        data: { name, family, username, password: hashed, phone, email },
+        select: selectUser,
+      }),
+      prisma.game.create({
+        data: { userId: 0, score: 0, level: 0 }, // userId will be replaced in the transaction
+      }),
+    ]);
+
+    // replace placeholder game with real userId
+    const firstGame = await prisma.game.update({
+      where: { id: _.id },
+      data: { userId: user.id },
+      select: selectGame,
     });
 
-    const token = generateToken(user);
+    const token = generateToken(user.id);
+
     res.json({
-      user: {
-        id: user.id,
-        username: user.username,
-        name: user.name,
-        family: user.family,
-        email: user.email,
-      },
+      user,
+      games: [firstGame], // Unity receives the initial game right away
       token,
     });
   } catch (err) {
@@ -51,24 +82,53 @@ export const register = async (req: Request, res: Response) => {
   }
 };
 
-// ✅ Login
+/* ---------- login ---------- */
+/* ---------- login ---------- */
 export const login = async (req: Request, res: Response) => {
   try {
     const { usernameOrEmail, password } = req.body;
     if (!usernameOrEmail || !password)
       return res.status(400).json({ error: "Missing credentials" });
 
-    const user = await prisma.user.findFirst({
+    // Step 1: Find user WITH password (but don't return it)
+    const userWithPassword = await prisma.user.findFirst({
       where: { OR: [{ username: usernameOrEmail }, { email: usernameOrEmail }] },
+      select: {
+        id: true,
+        password: true, // we need this for bcrypt.compare
+        username: true,
+        name: true,
+        family: true,
+        email: true,
+        phone: true,
+      },
     });
-    if (!user) return res.status(400).json({ error: "Invalid credentials" });
 
-    const ok = await bcrypt.compare(password, user.password);
-    if (!ok) return res.status(400).json({ error: "Invalid credentials" });
+    if (!userWithPassword) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
 
-    const token = generateToken(user);
+    // Step 2: Compare password
+    const ok = await bcrypt.compare(password, userWithPassword.password);
+    if (!ok) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
+
+    // Step 3: Remove password before sending to client
+    const { password: _, ...user } = userWithPassword; // destructuring to exclude password
+
+    // Step 4: Fetch games
+    const games = await prisma.game.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+      select: selectGame,
+    });
+
+    const token = generateToken(user.id);
+
     res.json({
-      user: { id: user.id, username: user.username, email: user.email },
+      user,
+      games,
       token,
     });
   } catch (err) {
@@ -76,13 +136,12 @@ export const login = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Server error" });
   }
 };
-
-// ✅ Get profile
-export const me = async (req: Request & { user?: JwtPayload }, res: Response) => {
+/* ---------- me (profile) ---------- */
+export const me = async (req: AuthRequest, res: Response) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user!.userId },
-      select: { id: true, name: true, family: true, username: true, email: true, phone: true },
+      select: selectUser,
     });
     res.json({ user });
   } catch (err) {
@@ -91,46 +150,43 @@ export const me = async (req: Request & { user?: JwtPayload }, res: Response) =>
   }
 };
 
-// ✅ Create game (returns game ID + game list)
-export const createGame = async (req: Request & { user?: JwtPayload }, res: Response) => {
+/* ---------- create extra game (optional) ---------- */
+export const createGame = async (req: AuthRequest, res: Response) => {
   try {
-    const { score = 0, level = 1 } = req.body;
+    const { score = 0, level = 0 } = req.body;
 
     const game = await prisma.game.create({
-      data: { score: Number(score), level: Number(level), userId: req.user!.userId },
+      data: {
+        score: Number(score),
+        level: Number(level),
+        userId: req.user!.userId,
+      },
+      select: selectGame,
     });
 
     const games = await prisma.game.findMany({
       where: { userId: req.user!.userId },
       orderBy: { createdAt: "desc" },
-      select: { id: true, score: true, level: true, createdAt: true },
+      select: selectGame,
     });
 
-    res.json({
-      message: "Game created successfully",
-      gameId: game.id,
-      games, // list for Unity
-    });
+    res.json({ message: "Game created", gameId: game.id, games });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
   }
 };
 
-// ✅ List games (for Unity)
-export const listGames = async (req: Request & { user?: JwtPayload }, res: Response) => {
+/* ---------- list games ---------- */
+export const listGames = async (req: AuthRequest, res: Response) => {
   try {
     const games = await prisma.game.findMany({
       where: { userId: req.user!.userId },
       orderBy: { createdAt: "desc" },
-      select: { id: true, score: true, level: true, createdAt: true },
+      select: selectGame,
     });
 
-    res.json({
-      userId: req.user!.userId,
-      totalGames: games.length,
-      games,
-    });
+    res.json({ userId: req.user!.userId, totalGames: games.length, games });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
