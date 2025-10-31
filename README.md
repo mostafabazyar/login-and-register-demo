@@ -100,6 +100,26 @@ curl -X GET http://localhost:4000/auth/games \
   -H "Authorization: Bearer YOUR_TOKEN_HERE"
 ```
 
+#### 🧾 Update user profile
+
+```bash
+curl -X PUT http://localhost:4000/update/profile \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Ali","family":"Rezayi","phone":"09120000000","email":"ali@update.com"}'
+```
+
+#### 🎮 Update game score and level
+
+```bash
+curl -X PUT http://localhost:4000/update/game \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
+  -H "Content-Type: application/json" \
+  -d '{"gameId":1,"score":2500,"level":7}'
+```
+
 ---
+
+
 
 Would you like me to update your **project ZIP** to use MySQL and include this `.env` already configured for XAMPP (so you can download and just run it)?
