@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `game` MODIFY `level` INTEGER NOT NULL DEFAULT 0;

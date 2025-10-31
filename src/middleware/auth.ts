@@ -1,3 +1,4 @@
+// src/middleware/auth.ts
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import prisma from "../prismaClient";
@@ -12,35 +13,29 @@ export default async function auth(
   next: NextFunction
 ): Promise<Response | void> {
   const authHeader = req.headers.authorization;
-  if (!authHeader)
+  if (!authHeader) {
     return res.status(401).json({ error: "Missing Authorization header" });
+  }
 
-  const parts = authHeader.split(" ");
-  if (parts.length !== 2 || parts[0] !== "Bearer")
-    return res
-      .status(401)
-      .json({ error: "Invalid Authorization header format" });
-
-  const token = parts[1];
+  const [scheme, token] = authHeader.split(" ");
+  if (scheme !== "Bearer" || !token) {
+    return res.status(401).json({ error: "Invalid Authorization format" });
+  }
 
   try {
-    const payload = jwt.verify(
-      token,
-      process.env.JWT_SECRET as string
-    ) as JwtPayload;
+    const payload = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
 
     const user = await prisma.user.findUnique({
       where: { id: payload.userId },
+      select: { id: true },
     });
 
-    if (!user) return res.status(401).json({ error: "User not found" });
+    if (!user) {
+      return res.status(401).json({ error: "User not found" });
+    }
 
-    // Add user info to request object
-    (req as any).user = {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-    };
+    // CORRECT: use `userId`, not `id`
+    (req as any).user = { userId: user.id };
 
     next();
   } catch (err) {
